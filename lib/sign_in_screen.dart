@@ -2,7 +2,7 @@
 //
 // Purpose: Authentication entry point.
 // Responsibility: Allows existing students to log in using their credentials.
-//   Admin: hardcoded reg-number + password → unique key → admin dashboard.
+//   Admin: Firebase Auth login → role check → OTP sent to email → admin dashboard.
 // Navigation: Login -> MainScreen | "Sign Up" -> RegistrationScreen
 
 import 'package:flutter/material.dart';
@@ -13,12 +13,8 @@ import 'package:go_router/go_router.dart';
 import 'app_theme.dart';
 import 'notifications/fcm_token_store.dart';
 import 'providers/auth_provider.dart';
-
-// ── Admin hardcoded credentials ───────────────────────────────────────────────
-const _kAdminRegNumber = 'ADMIN001';
-const _kAdminPassword = 'Admin@2025!';
-const _kAdminUniqueKey = 'HOSTEL-ADMIN-2025';
-// ─────────────────────────────────────────────────────────────────────────────
+import 'services/otp_service.dart';
+import 'services/email_service.dart';
 
 class SignInScreen extends ConsumerStatefulWidget {
   const SignInScreen({super.key});
@@ -30,16 +26,20 @@ class SignInScreen extends ConsumerStatefulWidget {
 class _SignInScreenState extends ConsumerState<SignInScreen>
     with SingleTickerProviderStateMixin {
   final _formKey = GlobalKey<FormState>();
-  final _keyFormKey = GlobalKey<FormState>();
+  final _otpFormKey = GlobalKey<FormState>();
 
   bool _obscurePassword = true;
-  bool _obscureKey = true;
   bool _isLoading = false;
-  bool _showAdminKeyStep = false; // true when step 2 (unique key) is visible
+  bool _showOtpStep = false; // true when OTP step is visible (admin only)
+  bool _isSendingOtp = false;
 
   final _regNumberController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _uniqueKeyController = TextEditingController();
+  final _otpController = TextEditingController();
+
+  // Stored after successful admin login, before OTP verification
+  String? _adminUid;
+  String? _adminEmail;
 
   late final AnimationController _slideController;
   late final Animation<Offset> _slideAnimation;
@@ -61,7 +61,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
   void dispose() {
     _regNumberController.dispose();
     _passwordController.dispose();
-    _uniqueKeyController.dispose();
+    _otpController.dispose();
     _slideController.dispose();
     super.dispose();
   }
@@ -73,44 +73,66 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
   Future<void> _signIn() async {
     if (!_formKey.currentState!.validate()) return;
 
-    final regNum = _regNumberController.text.trim();
+    final input = _regNumberController.text.trim();
     final password = _passwordController.text;
 
-    // ── Admin check ──────────────────────────────────────────────────────────
-    if (regNum == _kAdminRegNumber && password == _kAdminPassword) {
-      setState(() => _showAdminKeyStep = true);
-      _slideController.forward(from: 0);
-      return;
-    }
-
-    // ── Normal user Firebase flow (unchanged) ────────────────────────────────
     setState(() => _isLoading = true);
 
     try {
+      // Detect if user entered an email or a reg number
+      final bool isEmail = input.contains('@');
+
+      // Look up the user in Firestore
       final querySnapshot = await FirebaseFirestore.instance
           .collection('users')
-          .where('regNumber', isEqualTo: regNum)
+          .where(isEmail ? 'email' : 'regNumber', isEqualTo: input)
           .limit(1)
           .get();
 
       if (querySnapshot.docs.isEmpty) {
-        throw Exception('No account found with this registration number.');
+        throw Exception(
+          isEmail
+              ? 'No account found with this email.'
+              : 'No account found with this registration number.',
+        );
       }
 
-      final email = querySnapshot.docs.first.get('email') as String;
+      final userDoc = querySnapshot.docs.first;
+      final email = userDoc.get('email') as String;
+      final role = userDoc.data().containsKey('role')
+          ? userDoc.get('role') as String
+          : 'student';
 
+      // Authenticate with Firebase Auth
       await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: email,
         password: password,
       );
 
       final user = FirebaseAuth.instance.currentUser;
-      if (user != null) {
-        await saveFcmTokenForUser(user.uid);
-        print("✅ Logged in uid: ${user.uid}");
-      }
+      if (user == null) throw Exception('Authentication failed.');
 
-      // Auth state listener in router_provider handles redirect
+      await saveFcmTokenForUser(user.uid);
+      print("✅ Logged in uid: ${user.uid}");
+
+      // ── Role-based branching ──────────────────────────────────────────
+      if (role == 'admin') {
+        // Admin detected — send OTP and show OTP step
+        _adminUid = user.uid;
+        _adminEmail = email;
+
+        // Sign OUT so the admin isn't fully authenticated yet
+        // (they must verify OTP first)
+        await FirebaseAuth.instance.signOut();
+
+        await _sendOtp();
+
+        setState(() {
+          _showOtpStep = true;
+        });
+        _slideController.forward(from: 0);
+      }
+      // else: student — auth state listener in router handles redirect
     } on FirebaseAuthException catch (e) {
       String message;
       switch (e.code) {
@@ -137,26 +159,83 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
     }
   }
 
-  // ── Verify the unique admin key ────────────────────────────────────────────
-  void _verifyAdminKey() {
-    if (!_keyFormKey.currentState!.validate()) return;
+  // ── Send OTP to admin email ────────────────────────────────────────────
+  Future<void> _sendOtp() async {
+    if (_adminUid == null || _adminEmail == null) return;
 
-    if (_uniqueKeyController.text.trim() == _kAdminUniqueKey) {
-      // Mark admin as authenticated in Riverpod so the router allows /admin/*
-      ref.read(adminAuthProvider.notifier).setAuthenticated();
-      context.go('/admin/hostels');
-    } else {
-      _showError('Invalid admin key. Access denied.');
+    setState(() => _isSendingOtp = true);
+
+    try {
+      final otp = OtpService.generateOtp();
+      await OtpService.storeOtp(_adminUid!, otp);
+
+      final sent = await EmailService.sendOtpEmail(
+        recipientEmail: _adminEmail!,
+        otp: otp,
+      );
+
+      if (!sent) {
+        _showError('Failed to send OTP email. Please try again.');
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('OTP sent to $_adminEmail'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      _showError('Error sending OTP: $e');
+    } finally {
+      if (mounted) setState(() => _isSendingOtp = false);
     }
   }
 
-  // ── Go back to step 1 ─────────────────────────────────────────────────────
+  // ── Verify the OTP ─────────────────────────────────────────────────────
+  Future<void> _verifyOtp() async {
+    if (!_otpFormKey.currentState!.validate()) return;
+    if (_adminUid == null || _adminEmail == null) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      final isValid = await OtpService.verifyOtp(
+        _adminUid!,
+        _otpController.text.trim(),
+      );
+
+      if (isValid) {
+        // Re-sign in the admin now that OTP is verified
+        // We need their password to re-authenticate
+        await FirebaseAuth.instance.signInWithEmailAndPassword(
+          email: _adminEmail!,
+          password: _passwordController.text,
+        );
+
+        // Mark admin as authenticated in Riverpod so the router allows /admin/*
+        ref.read(adminAuthProvider.notifier).setAuthenticated();
+        context.go('/admin/hostels');
+      } else {
+        _showError('Invalid or expired OTP. Please try again.');
+      }
+    } catch (e) {
+      _showError('Verification failed: $e');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // ── Go back to step 1 ─────────────────────────────────────────────────
   void _backToCredentials() {
     _slideController.reverse().then((_) {
       if (mounted) {
         setState(() {
-          _showAdminKeyStep = false;
-          _uniqueKeyController.clear();
+          _showOtpStep = false;
+          _otpController.clear();
+          _adminUid = null;
+          _adminEmail = null;
         });
       }
     });
@@ -215,10 +294,10 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
                   AnimatedSwitcher(
                     duration: const Duration(milliseconds: 300),
                     child: Text(
-                      _showAdminKeyStep
-                          ? 'Enter your admin unique key to continue'
+                      _showOtpStep
+                          ? 'Enter the OTP sent to your email'
                           : 'Sign in to manage your accommodation',
-                      key: ValueKey(_showAdminKeyStep),
+                      key: ValueKey(_showOtpStep),
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: isDark
                             ? Colors.grey.shade400
@@ -231,21 +310,22 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
 
                   // ── Step 1: Credentials form ──────────────────────────────
                   AnimatedOpacity(
-                    opacity: _showAdminKeyStep ? 0.0 : 1.0,
+                    opacity: _showOtpStep ? 0.0 : 1.0,
                     duration: const Duration(milliseconds: 250),
                     child: IgnorePointer(
-                      ignoring: _showAdminKeyStep,
+                      ignoring: _showOtpStep,
                       child: Form(
                         key: _formKey,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            _fieldLabel('Reg Number', isDark),
+                            _fieldLabel('Email or Reg Number', isDark),
                             const SizedBox(height: 8),
                             TextFormField(
                               controller: _regNumberController,
                               decoration: const InputDecoration(
-                                hintText: 'e.g., 2018/123456',
+                                hintText:
+                                    'e.g., 2018/123456 or email@futo.edu.ng',
                               ),
                               validator: (v) =>
                                   (v == null || v.isEmpty) ? 'Required' : null,
@@ -299,14 +379,14 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
                     ),
                   ),
 
-                  // ── Step 2: Admin unique key ──────────────────────────────
-                  if (_showAdminKeyStep)
+                  // ── Step 2: Admin OTP verification ─────────────────────────
+                  if (_showOtpStep)
                     SlideTransition(
                       position: _slideAnimation,
                       child: FadeTransition(
                         opacity: _slideController,
                         child: Form(
-                          key: _keyFormKey,
+                          key: _otpFormKey,
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
@@ -346,40 +426,78 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
                                   ],
                                 ),
                               ),
+                              const SizedBox(height: 12),
+                              // Email info
+                              Text(
+                                'OTP sent to: ${_adminEmail ?? ''}',
+                                style: TextStyle(
+                                  color: isDark
+                                      ? Colors.grey.shade400
+                                      : Colors.grey.shade600,
+                                  fontSize: 13,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
                               const SizedBox(height: 20),
-                              _fieldLabel('Unique Key', isDark),
+                              _fieldLabel('Enter OTP', isDark),
                               const SizedBox(height: 8),
                               TextFormField(
-                                controller: _uniqueKeyController,
-                                obscureText: _obscureKey,
+                                controller: _otpController,
+                                keyboardType: TextInputType.number,
+                                maxLength: 6,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 8,
+                                ),
                                 decoration: InputDecoration(
-                                  hintText: 'Enter your unique admin key',
+                                  hintText: '------',
+                                  counterText: '',
                                   prefixIcon: const Icon(
-                                    Icons.key_rounded,
+                                    Icons.lock_outline_rounded,
                                     color: AppTheme.primaryColor,
                                   ),
-                                  suffixIcon: IconButton(
-                                    icon: Icon(
-                                      _obscureKey
-                                          ? Icons.visibility
-                                          : Icons.visibility_off,
-                                      color: Colors.grey.shade400,
-                                    ),
-                                    onPressed: () => setState(
-                                      () => _obscureKey = !_obscureKey,
-                                    ),
-                                  ),
                                 ),
-                                validator: (v) => (v == null || v.isEmpty)
-                                    ? 'Required'
-                                    : null,
+                                validator: (v) {
+                                  if (v == null || v.isEmpty) return 'Required';
+                                  if (v.length != 6) return 'Enter 6 digits';
+                                  return null;
+                                },
                               ),
                               const SizedBox(height: 24),
                               ElevatedButton(
-                                onPressed: _verifyAdminKey,
-                                child: const Text('Access Admin Dashboard'),
+                                onPressed: _isLoading ? null : _verifyOtp,
+                                child: _isLoading
+                                    ? const SizedBox(
+                                        height: 20,
+                                        width: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Text('Verify & Access Dashboard'),
                               ),
                               const SizedBox(height: 12),
+                              // Resend OTP button
+                              TextButton(
+                                onPressed: _isSendingOtp ? null : _sendOtp,
+                                child: _isSendingOtp
+                                    ? const SizedBox(
+                                        height: 16,
+                                        width: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Text(
+                                        'Resend OTP',
+                                        style: TextStyle(
+                                          color: AppTheme.primaryColor,
+                                        ),
+                                      ),
+                              ),
+                              const SizedBox(height: 4),
                               TextButton(
                                 onPressed: _backToCredentials,
                                 child: const Text(
@@ -395,8 +513,8 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
                       ),
                     ),
 
-                  // ── Footer: Sign Up link (hidden during key step) ─────────
-                  if (!_showAdminKeyStep) ...[
+                  // ── Footer: Sign Up link (hidden during OTP step) ─────────
+                  if (!_showOtpStep) ...[
                     const SizedBox(height: 48),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,

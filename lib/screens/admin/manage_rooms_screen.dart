@@ -63,6 +63,43 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
   }
 
   Future<void> _deleteRoom(String roomId) async {
+    // First check if the room has occupants
+    try {
+      final roomDoc = await FirebaseFirestore.instance
+          .collection('rooms')
+          .doc(roomId)
+          .get();
+
+      if (roomDoc.exists) {
+        final data = roomDoc.data()!;
+        final occupants = data['occupants'] as List<dynamic>? ?? [];
+        final isAvailable = data['isAvailable'] as bool? ?? true;
+
+        if (occupants.isNotEmpty || !isAvailable) {
+          // Room is occupied — show warning modal
+          if (!mounted) return;
+          showDialog(
+            context: context,
+            builder: (context) => CustomModal(
+              title: 'Cannot Delete Room',
+              subtitle:
+                  'This room currently has ${occupants.length} occupant(s). '
+                  'Please remove all occupants before deleting this room.',
+              paramActionText: 'OK',
+              actionColor: Colors.orange,
+              isDestructive: false,
+              onAction: () => Navigator.pop(context),
+            ),
+          );
+          return;
+        }
+      }
+    } catch (e) {
+      _showError('Error checking room status: $e');
+      return;
+    }
+
+    // Room is empty — show delete confirmation
     showDialog(
       context: context,
       builder: (context) => CustomModal(
@@ -93,6 +130,13 @@ class _ManageRoomsScreenState extends State<ManageRoomsScreen> {
           }
         },
       ),
+    );
+  }
+
+  void _showError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red),
     );
   }
 

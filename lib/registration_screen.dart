@@ -69,11 +69,11 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
 
     try {
       // Create user with Firebase Auth
-      final UserCredential userCredential =
-          await FirebaseAuth.instance.createUserWithEmailAndPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-      );
+      final UserCredential userCredential = await FirebaseAuth.instance
+          .createUserWithEmailAndPassword(
+            email: _emailController.text.trim(),
+            password: _passwordController.text,
+          );
 
       final User? user = userCredential.user;
 
@@ -87,6 +87,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
           'email': _emailController.text.trim(),
           'phone': _phoneController.text.trim(),
           'gender': _genderController.text.trim(),
+          'role': 'student',
           'createdAt': FieldValue.serverTimestamp(),
         });
 
@@ -175,9 +176,9 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                   Text(
                     'Student Registration',
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 22,
-                        ),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 22,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   const Text(
@@ -276,15 +277,17 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                           'Password',
                           _obscurePassword,
                           () => setState(
-                              () => _obscurePassword = !_obscurePassword),
+                            () => _obscurePassword = !_obscurePassword,
+                          ),
                           controller: _passwordController,
                         ),
                         const SizedBox(height: 16),
                         _buildPasswordInput(
                           'Confirm Password',
                           _obscureConfirm,
-                          () =>
-                              setState(() => _obscureConfirm = !_obscureConfirm),
+                          () => setState(
+                            () => _obscureConfirm = !_obscureConfirm,
+                          ),
                           controller: _confirmPasswordController,
                         ),
 
@@ -380,8 +383,9 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
           controller: controller,
           obscureText: obscure,
           decoration: InputDecoration(
-            hintText:
-                label.contains('Confirm') ? 'Confirm password' : 'Create password',
+            hintText: label.contains('Confirm')
+                ? 'Confirm password'
+                : 'Create password',
             hintStyle: const TextStyle(color: Color(0xFF45A1A1)),
             suffixIcon: IconButton(
               icon: Icon(

@@ -173,3 +173,97 @@ Future<void> seedHostelData() async {
     print('Error seeding data: $e');
   }
 }
+
+/// Creates an admin user in Firebase Auth + Firestore.
+/// Call this once, e.g. from a button on a debug screen or from main().
+/// If the admin already exists it will skip creation.
+Future<void> seedAdminUser() async {
+  final firestore = FirebaseFirestore.instance;
+  final auth = FirebaseAuth.instance;
+
+  const adminEmail = 'madukajesse14@gmail.com';
+  const adminPassword = 'JesusISking';
+  const adminRegNumber = 'ADMIN001';
+
+  try {
+    print('🔧 Seeding admin user...');
+
+    // Check if admin already exists in Firestore by regNumber
+    final existing = await firestore
+        .collection('users')
+        .where('regNumber', isEqualTo: adminRegNumber)
+        .limit(1)
+        .get();
+
+    if (existing.docs.isNotEmpty) {
+      print('✅ Admin user already exists, skipping.');
+      return;
+    }
+
+    // Create in Firebase Auth
+    final credential = await auth.createUserWithEmailAndPassword(
+      email: adminEmail,
+      password: adminPassword,
+    );
+
+    final user = credential.user;
+    if (user == null) {
+      print('❌ Failed to create admin user in Auth.');
+      return;
+    }
+
+    // Store admin doc in Firestore
+    await firestore.collection('users').doc(user.uid).set({
+      'firstName': 'Admin',
+      'lastName': 'User',
+      'regNumber': adminRegNumber,
+      'department': 'Administration',
+      'email': adminEmail,
+      'phone': '',
+      'gender': '',
+      'role': 'admin',
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+
+    print('✅ Admin user created successfully!');
+    print('   Email: $adminEmail');
+    print('   Reg Number: $adminRegNumber');
+    print('   UID: ${user.uid}');
+
+    // Sign out so the app doesn't stay logged in as admin
+    await auth.signOut();
+  } on FirebaseAuthException catch (e) {
+    if (e.code == 'email-already-in-use') {
+      print('⚠️ Admin email already in Auth. Checking Firestore...');
+      // Try to sign in to get the UID and ensure Firestore doc exists
+      try {
+        final cred = await auth.signInWithEmailAndPassword(
+          email: adminEmail,
+          password: adminPassword,
+        );
+        final uid = cred.user?.uid;
+        if (uid != null) {
+          await firestore.collection('users').doc(uid).set({
+            'firstName': 'Admin',
+            'lastName': 'User',
+            'regNumber': adminRegNumber,
+            'department': 'Administration',
+            'email': adminEmail,
+            'phone': '',
+            'gender': '',
+            'role': 'admin',
+            'createdAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+          print('✅ Admin Firestore doc created/merged for UID: $uid');
+        }
+        await auth.signOut();
+      } catch (e2) {
+        print('❌ Could not reconcile admin: $e2');
+      }
+    } else {
+      print('❌ Error creating admin: ${e.message}');
+    }
+  } catch (e) {
+    print('❌ Error seeding admin: $e');
+  }
+}

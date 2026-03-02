@@ -51,12 +51,63 @@ class _AddEditHostelScreenState extends State<AddEditHostelScreen> {
   }
 
   Future<void> _deleteHostel() async {
+    // First check if any rooms in this hostel have occupants
+    setState(() => _isLoading = true);
+    try {
+      final roomsQuery = await FirebaseFirestore.instance
+          .collection('rooms')
+          .where('hostelId', isEqualTo: widget.hostelId)
+          .get();
+
+      int occupiedRoomCount = 0;
+      for (final roomDoc in roomsQuery.docs) {
+        final data = roomDoc.data();
+        final occupants = data['occupants'] as List<dynamic>? ?? [];
+        if (occupants.isNotEmpty) {
+          occupiedRoomCount++;
+        }
+      }
+
+      setState(() => _isLoading = false);
+
+      if (occupiedRoomCount > 0) {
+        // Hostel has occupied rooms — show warning
+        if (!mounted) return;
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Cannot Delete Hostel'),
+            content: Text(
+              'This hostel has $occupiedRoomCount room(s) with occupants. '
+              'Please remove all occupants from every room before deleting this hostel.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+    } catch (e) {
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error checking hostel rooms: $e')),
+        );
+      }
+      return;
+    }
+
+    // All rooms are empty — show delete confirmation
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Hostel'),
         content: const Text(
-          'Are you sure you want to delete this hostel? All associated rooms should be handled manually.',
+          'Are you sure you want to delete this hostel and all its rooms? This cannot be undone.',
         ),
         actions: [
           TextButton(
@@ -75,13 +126,27 @@ class _AddEditHostelScreenState extends State<AddEditHostelScreen> {
 
     setState(() => _isLoading = true);
     try {
-      await FirebaseFirestore.instance
-          .collection('hostels')
-          .doc(widget.hostelId)
-          .delete();
+      // Delete all rooms belonging to this hostel
+      final roomsQuery = await FirebaseFirestore.instance
+          .collection('rooms')
+          .where('hostelId', isEqualTo: widget.hostelId)
+          .get();
+
+      final batch = FirebaseFirestore.instance.batch();
+      for (final doc in roomsQuery.docs) {
+        batch.delete(doc.reference);
+      }
+      // Delete the hostel itself
+      batch.delete(
+        FirebaseFirestore.instance.collection('hostels').doc(widget.hostelId),
+      );
+      await batch.commit();
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Hostel deleted successfully')),
+          const SnackBar(
+            content: Text('Hostel and its rooms deleted successfully'),
+          ),
         );
         context.pop();
       }

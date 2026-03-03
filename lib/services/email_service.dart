@@ -2,17 +2,13 @@ import 'package:mailer/mailer.dart';
 import 'package:mailer/smtp_server.dart';
 
 /// Service to send OTP emails to admin users via SMTP.
-///
-/// ⚠️  IMPORTANT: Replace the placeholder credentials below with real values.
-///     For Gmail, generate an App Password at:
-///     https://myaccount.google.com/apppasswords
 class EmailService {
   // ── SMTP Configuration ──────────────────────────────────────────────────
   // TODO: Replace with your actual SMTP credentials
   static const _smtpHost = 'smtp.gmail.com';
   static const _smtpPort = 587;
-  static const _smtpUsername = 'madukajesse14@gmail.com';
-  static const _smtpPassword = 'kpit bbsw vlht cxih';
+  static const _smtpUsername = 'akabuezechris432@gmail.com';
+  static const _smtpPassword = 'dhdukissslhypjnr';
   // ────────────────────────────────────────────────────────────────────────
 
   /// Send OTP email to [recipientEmail].

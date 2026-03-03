@@ -175,95 +175,132 @@ Future<void> seedHostelData() async {
 }
 
 /// Creates an admin user in Firebase Auth + Firestore.
-/// Call this once, e.g. from a button on a debug screen or from main().
-/// If the admin already exists it will skip creation.
+/// Handles all edge cases: existing email, existing reg number, etc.
 Future<void> seedAdminUser() async {
   final firestore = FirebaseFirestore.instance;
   final auth = FirebaseAuth.instance;
 
-  const adminEmail = 'madukajesse14@gmail.com';
+  const adminEmail = 'akabuezechris432@gmail.com';
   const adminPassword = 'JesusISking';
   const adminRegNumber = 'ADMIN001';
 
   try {
-    print('🔧 Seeding admin user...');
+    print('Seeding admin user...');
 
-    // Check if admin already exists in Firestore by regNumber
-    final existing = await firestore
+    // 1. Check if admin already exists by regNumber
+    final existingByReg = await firestore
         .collection('users')
         .where('regNumber', isEqualTo: adminRegNumber)
         .limit(1)
         .get();
 
-    if (existing.docs.isNotEmpty) {
-      print('✅ Admin user already exists, skipping.');
-      return;
-    }
-
-    // Create in Firebase Auth
-    final credential = await auth.createUserWithEmailAndPassword(
-      email: adminEmail,
-      password: adminPassword,
-    );
-
-    final user = credential.user;
-    if (user == null) {
-      print('❌ Failed to create admin user in Auth.');
-      return;
-    }
-
-    // Store admin doc in Firestore
-    await firestore.collection('users').doc(user.uid).set({
-      'firstName': 'Admin',
-      'lastName': 'User',
-      'regNumber': adminRegNumber,
-      'department': 'Administration',
-      'email': adminEmail,
-      'phone': '',
-      'gender': '',
-      'role': 'admin',
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-
-    print('✅ Admin user created successfully!');
-    print('   Email: $adminEmail');
-    print('   Reg Number: $adminRegNumber');
-    print('   UID: ${user.uid}');
-
-    // Sign out so the app doesn't stay logged in as admin
-    await auth.signOut();
-  } on FirebaseAuthException catch (e) {
-    if (e.code == 'email-already-in-use') {
-      print('⚠️ Admin email already in Auth. Checking Firestore...');
-      // Try to sign in to get the UID and ensure Firestore doc exists
-      try {
-        final cred = await auth.signInWithEmailAndPassword(
-          email: adminEmail,
-          password: adminPassword,
-        );
-        final uid = cred.user?.uid;
-        if (uid != null) {
-          await firestore.collection('users').doc(uid).set({
-            'firstName': 'Admin',
-            'lastName': 'User',
-            'regNumber': adminRegNumber,
-            'department': 'Administration',
-            'email': adminEmail,
-            'phone': '',
-            'gender': '',
-            'role': 'admin',
-            'createdAt': FieldValue.serverTimestamp(),
-          }, SetOptions(merge: true));
-          print('✅ Admin Firestore doc created/merged for UID: $uid');
-        }
-        await auth.signOut();
-      } catch (e2) {
-        print('❌ Could not reconcile admin: $e2');
+    if (existingByReg.docs.isNotEmpty) {
+      // Make sure role is set to admin
+      final doc = existingByReg.docs.first;
+      if (doc.data()['role'] != 'admin') {
+        await doc.reference.update({'role': 'admin'});
+        print('Admin role updated for existing ADMIN001 user.');
+      } else {
+        print('Admin user already exists, skipping.');
       }
-    } else {
-      print('❌ Error creating admin: ${e.message}');
+      return;
+    }
+
+    // 2. Check if this email already exists in Firestore (e.g. registered as student)
+    final existingByEmail = await firestore
+        .collection('users')
+        .where('email', isEqualTo: adminEmail)
+        .limit(1)
+        .get();
+
+    if (existingByEmail.docs.isNotEmpty) {
+      // Email already registered — just update role and regNumber
+      final doc = existingByEmail.docs.first;
+      await doc.reference.update({
+        'role': 'admin',
+        'regNumber': adminRegNumber,
+      });
+      print('Existing user upgraded to admin. UID: ${doc.id}');
+      print('   Use your EXISTING password to sign in (not JesusISking).');
+      return;
+    }
+
+    // 3. No Firestore doc exists — try to create in Firebase Auth
+    try {
+      final credential = await auth.createUserWithEmailAndPassword(
+        email: adminEmail,
+        password: adminPassword,
+      );
+
+      final user = credential.user;
+      if (user == null) {
+        print('Failed to create admin user in Auth.');
+        return;
+      }
+
+      // Create Firestore doc
+      await firestore.collection('users').doc(user.uid).set({
+        'firstName': 'Admin',
+        'lastName': 'User',
+        'regNumber': adminRegNumber,
+        'department': 'Administration',
+        'email': adminEmail,
+        'phone': '',
+        'gender': '',
+        'role': 'admin',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      print('Admin user created successfully!');
+      print('   Email: $adminEmail');
+      print('   Reg Number: $adminRegNumber');
+      print('   Password: $adminPassword');
+
+      // Sign out so the app doesn't stay logged in as admin
+      await auth.signOut();
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'email-already-in-use') {
+        // Email exists in Auth but NOT in Firestore — try signing in
+        print('Admin email exists in Auth but not Firestore. Reconciling...');
+        try {
+          final cred = await auth.signInWithEmailAndPassword(
+            email: adminEmail,
+            password: adminPassword,
+          );
+          final uid = cred.user?.uid;
+          if (uid != null) {
+            await firestore.collection('users').doc(uid).set({
+              'firstName': 'Admin',
+              'lastName': 'User',
+              'regNumber': adminRegNumber,
+              'department': 'Administration',
+              'email': adminEmail,
+              'phone': '',
+              'gender': '',
+              'role': 'admin',
+              'createdAt': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true));
+            print('Admin Firestore doc created for UID: $uid');
+          }
+          await auth.signOut();
+        } catch (e2) {
+          // Can't sign in either — password mismatch
+          // Create a Firestore doc anyway with a placeholder UID
+          // The user will need to use "Forgot Password" to reset
+          print('Cannot sign into existing Auth account.');
+          print(
+            'The email may have been registered with a different password.',
+          );
+          print(
+            'Please use "Forgot Password" on the sign-in screen to reset it,',
+          );
+          print('or sign in with your original password for $adminEmail.');
+        }
+      } else {
+        print('Error creating admin: ${e.message}');
+      }
     }
   } catch (e) {
-    print('❌ Error seeding admin: $e');
+    print('Error seeding admin: $e');
   }
 }

@@ -117,13 +117,9 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
 
       // ── Role-based branching ──────────────────────────────────────────
       if (role == 'admin') {
-        // Admin detected — send OTP and show OTP step
+        // Admin detected — credentials are correct, now send OTP
         _adminUid = user.uid;
         _adminEmail = email;
-
-        // Sign OUT so the admin isn't fully authenticated yet
-        // (they must verify OTP first)
-        await FirebaseAuth.instance.signOut();
 
         await _sendOtp();
 
@@ -176,16 +172,8 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
 
       if (!sent) {
         _showError('Failed to send OTP email. Please try again.');
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('OTP sent to $_adminEmail'),
-              backgroundColor: Colors.green,
-            ),
-          );
-        }
       }
+      // "Check your mail" message is shown in the UI via _showOtpStep
     } catch (e) {
       _showError('Error sending OTP: $e');
     } finally {
@@ -196,7 +184,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
   // ── Verify the OTP ─────────────────────────────────────────────────────
   Future<void> _verifyOtp() async {
     if (!_otpFormKey.currentState!.validate()) return;
-    if (_adminUid == null || _adminEmail == null) return;
+    if (_adminUid == null) return;
 
     setState(() => _isLoading = true);
 
@@ -207,14 +195,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
       );
 
       if (isValid) {
-        // Re-sign in the admin now that OTP is verified
-        // We need their password to re-authenticate
-        await FirebaseAuth.instance.signInWithEmailAndPassword(
-          email: _adminEmail!,
-          password: _passwordController.text,
-        );
-
-        // Mark admin as authenticated in Riverpod so the router allows /admin/*
+        // Admin is already signed in — just mark OTP verified and navigate
         ref.read(adminAuthProvider.notifier).setAuthenticated();
         context.go('/admin/hostels');
       } else {
@@ -229,6 +210,8 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
 
   // ── Go back to step 1 ─────────────────────────────────────────────────
   void _backToCredentials() {
+    // Sign out since admin was already authenticated
+    FirebaseAuth.instance.signOut();
     _slideController.reverse().then((_) {
       if (mounted) {
         setState(() {
@@ -295,7 +278,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen>
                     duration: const Duration(milliseconds: 300),
                     child: Text(
                       _showOtpStep
-                          ? 'Enter the OTP sent to your email'
+                          ? 'Check your mail for OTP'
                           : 'Sign in to manage your accommodation',
                       key: ValueKey(_showOtpStep),
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(

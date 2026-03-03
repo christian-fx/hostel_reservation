@@ -18,6 +18,7 @@ class _AddEditHostelScreenState extends State<AddEditHostelScreen> {
   final _totalRoomsController = TextEditingController();
   final _imageUrlController = TextEditingController();
 
+  String _hostelGender = 'Female'; // Default
   bool _isLoading = false;
 
   @override
@@ -28,6 +29,7 @@ class _AddEditHostelScreenState extends State<AddEditHostelScreen> {
       _totalRoomsController.text =
           widget.initialData!['totalRooms']?.toString() ?? '0';
       _imageUrlController.text = widget.initialData!['imageUrl'] ?? '';
+      _hostelGender = widget.initialData!['hostelGender'] ?? 'Female';
     } else if (widget.hostelId != null) {
       _fetchData();
     }
@@ -45,6 +47,7 @@ class _AddEditHostelScreenState extends State<AddEditHostelScreen> {
           _nameController.text = data['name'] ?? '';
           _totalRoomsController.text = data['totalRooms']?.toString() ?? '0';
           _imageUrlController.text = data['imageUrl'] ?? '';
+          _hostelGender = data['hostelGender'] ?? 'Female';
         });
       }
     } catch (_) {}
@@ -173,6 +176,7 @@ class _AddEditHostelScreenState extends State<AddEditHostelScreen> {
         'name': _nameController.text.trim(),
         'totalRooms': totalRoomsParsed,
         'imageUrl': _imageUrlController.text.trim(),
+        'hostelGender': _hostelGender,
         if (widget.hostelId == null) 'createdAt': FieldValue.serverTimestamp(),
       };
 
@@ -260,6 +264,30 @@ class _AddEditHostelScreenState extends State<AddEditHostelScreen> {
                 keyboardType: TextInputType.number,
                 validator: (val) =>
                     val == null || val.isEmpty ? 'Required field' : null,
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                value: _hostelGender,
+                decoration: InputDecoration(
+                  labelText: 'Hostel Type',
+                  prefixIcon: const Icon(Icons.people),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                ),
+                items: ['Male', 'Female'].map((gender) {
+                  return DropdownMenuItem<String>(
+                    value: gender,
+                    child: Text('$gender Hostel'),
+                  );
+                }).toList(),
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => _hostelGender = value);
+                  }
+                },
               ),
 
               const SizedBox(height: 32),
